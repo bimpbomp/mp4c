@@ -146,7 +146,7 @@ def write_new_metadata_to_file(mp4_filename, new_metadata):
     with open(temp_meta_filename, "w") as f:
         f.write(new_metadata)
 
-    subprocess.check_output(["ffmpeg", "-i", mp4_filename, "-i", temp_meta_filename, "-map_chapters", "1", "-codec", "copy", temp_mp4_filename])
+    subprocess.check_output(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", mp4_filename, "-i", temp_meta_filename, "-map_chapters", "1", "-codec", "copy", temp_mp4_filename])
 
     os.remove(mp4_filename)
     os.remove(temp_meta_filename)
@@ -155,17 +155,7 @@ def write_new_metadata_to_file(mp4_filename, new_metadata):
     
 # replaces any chapters in the mp4 file with the new chapters from the chapter file
 def replace_chapters_from_file(mp4_filename, new_chapter_filename):
-    raw_chapters = load_existing_chapters(mp4_filename)
     new_raw_chapters = load_new_chapters(new_chapter_filename)
-
-    print("Existing chapters")
-    for chapter in raw_chapters:
-        print(f"{chapter[0]} {chapter[1]}")
-
-    print("")
-    print("New chapters")
-    for chapter in new_raw_chapters:
-        print(f"{chapter[0]} {chapter[1]}")
 
     metadata_filename = "temp-" + datetime.now().strftime("%H%M%S")
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", mp4_filename, "-f", "ffmetadata", metadata_filename])
@@ -177,17 +167,15 @@ def replace_chapters_from_file(mp4_filename, new_chapter_filename):
 
     index_of_first_chapter = find_index(file_metadata, "[CHAPTER]")
 
+    chapters = format_chapters(new_raw_chapters, mp4_filename)
+
     if index_of_first_chapter > 0:
         file_metadata = remove_existing_chapters(file_metadata)
-        chapters = format_chapters(new_raw_chapters, mp4_filename)
-
         file_metadata = file_metadata[:index_of_first_chapter] + chapters + file_metadata [:index_of_first_chapter:]
-
-        print("")
-        print("New metadata")
-        print(file_metadata)        
-        
-        write_new_metadata_to_file(mp4_filename, file_metadata)
+    else:
+        file_metadata = file_metadata + chapters    
+    
+    write_new_metadata_to_file(mp4_filename, file_metadata)
 
 if __name__ == "__main__":
     if len(sys.argv) == 3:
@@ -212,7 +200,9 @@ if __name__ == "__main__":
                 if extension == "mp4" and os.path.exists(chapter_file):
                     valid_files.append((f, chapter_file))
 
-        for file in valid_files:
+        print(f"Processing {len(valid_files)} mp4 files")
+        for idx, file in enumerate(valid_files):
+            print(f"Processing file {idx + 1}/{len(valid_files)}: {file[0]}")
             replace_chapters_from_file(*file)
     else:
         print("Error: Expected 2 arguments: file.mp4 chapters.txt\nOr expected 1 argument: files_directory")
