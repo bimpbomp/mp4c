@@ -195,5 +195,24 @@ if __name__ == "__main__":
         chapter_filename = sys.argv[2]
 
         replace_chapters_from_file(mp4_filename, chapter_filename)
+    elif len(sys.argv) == 2:
+        files_dir = sys.argv[1]
+
+        valid_files = []
+
+        for filename in os.listdir(files_dir):
+            f = os.path.join(files_dir, filename)
+
+            # checking if it is a file
+            if os.path.isfile(f):
+                filename_noext, extension = filename.split(".")
+                chapter_file = os.path.join(files_dir, filename_noext + ".txt")
+
+                # add files in tuple if both an mp4 and txt exist with same name
+                if extension == "mp4" and os.path.exists(chapter_file):
+                    valid_files.append((f, chapter_file))
+
+        for file in valid_files:
+            replace_chapters_from_file(*file)
     else:
-        print("Error: Expected 2 arguments: file.mp4 chapters.txt")
+        print("Error: Expected 2 arguments: file.mp4 chapters.txt\nOr expected 1 argument: files_directory")
