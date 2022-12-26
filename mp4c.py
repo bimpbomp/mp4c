@@ -2,18 +2,24 @@ import subprocess
 import re
 from datetime import datetime
 import os
+import sys
 
-def load_chapters(filename):
-    temp_filename = "temp-" + datetime.now().strftime("%H%M%S")
+# matches a chapter block
+CHAPTER_REGEX = "\[CHAPTER\]\nTIMEBASE=([0-9]+\/[0-9]+)\nSTART=([0-9]+)\nEND=([0-9]+)\ntitle=(.+)"
+
+# loads chapters from mp4 file metadata
+def load_existing_chapters(filename):
+    temp_filename = "temp-chapters-" + datetime.now().strftime("%H%M%S")
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", filename, "-f", "ffmetadata", temp_filename])
 
     with open(temp_filename) as f:
-        chapter_strings = re.findall("\[CHAPTER\]\nTIMEBASE=([0-9]+\/[0-9]+)\nSTART=([0-9]+)\nEND=([0-9]+)\ntitle=(.+)", f.read())
+        chapter_strings = re.findall(CHAPTER_REGEX, f.read())
 
     os.remove(temp_filename)
 
-    # format into dicts list
+    # format into dicts list and tuple list
     chapters = []
+    raw_chapters = []
     for chapter_string in chapter_strings:
         chapter = {
             'timebase': chapter_string[0],
@@ -21,22 +27,65 @@ def load_chapters(filename):
             'end': chapter_string[2],
             'title': chapter_string[3],
         }
+
         chapters.append(chapter)
+        raw_chapters.append((chapter['start'], chapter['title']))
 
-    return chapters
+    return raw_chapters
 
-def add_chapter(new_chapter, chapters):
-    # find first chapter with end time less than new_chapter start, or start time too...
-    # update the existing chapter's end time to be new_chapter's start time
-    # if there is another chapter after the existing chapter, update it's start time to be the new_chapter's end time
-    # otherwise, ensure new_chapter's end time is the end of the video 
-    pass
+# loads chapters from a text file in the format:
+# HH:MM:SS Title of chapter
+# or
+# MM:SS Title of chapter
+def load_new_chapters(chapter_filename, delimiter=" - "):
+    raw_chapters = []
 
-def format_time(hrs=0, mins=0, secs=0):
+    with open(chapter_filename) as f:
+        for line in f.readlines():
+            # split by first space to separate time & title
+            line = line.split(delimiter, 1)
+
+            # correct number of arguments present: time & title
+            if len(line) == 2:
+                start_time = line[0]
+                start_time = format_time(start_time)
+
+                # time is valid, so parse title and add to chapters
+                if start_time > 0:
+                    title = line[1]
+                    raw_chapters.append((start_time, title.rstrip()))
+    
+    return raw_chapters
+
+# format a time from HH:MM:SS into milliseconds
+def format_time(time):
+    time = time.split(":")
+
+    if len(time) == 2:
+        ## interpret as minutes and seconds
+        time = format_time_into_millis(0, *time)
+    elif len(time) == 3:
+        ## interpret as hours, minutes, seconds
+        time = format_time_into_millis(*time)
+    else:
+        time = -1
+
+    return time
+
+# helper function for the above
+def format_time_into_millis(hrs, mins, secs):
+    try:
+        hrs = int(hrs)
+        mins = int(mins)
+        secs = int(secs)
+    except ValueError:
+        return -1
+
     minutes = (hrs * 60) + mins
     seconds = secs + (minutes * 60)
     return (seconds * 1000)
 
+# formats a chapter object into a string in the format expected by ffmpeg
 def chapter_to_string(chapter):
     return f"""
 [CHAPTER]
@@ -46,6 +95,7 @@ END={chapter['end']}
 title={chapter['title']}
 """
 
+# gets the duration of the mp4 file in milliseconds
 def get_duration_millis(filename):
     duration = str(subprocess.check_output(["ffprobe", "-i", filename, "-show_entries", "format=duration", "-v", "quiet"]))
     result = re.search("duration=([0-9]+\.[0-9]+)", duration)
@@ -53,13 +103,97 @@ def get_duration_millis(filename):
     duration = int(float(duration))
     return duration * 1000
 
-def write_test_chapters():
-    duration = get_duration_millis("AndrewWiltseKneeSliceVol1.mp4")
-    with open("FFMETADATAFILE_mod", 'a') as f:
-        f.write(format_chapter("1/1000", 0, format_time(0, 1, 30), "Chapter 1"))
-        f.write(format_chapter("1/1000", format_time(0, 1, 30), format_time(0, 25, 0), "Chapter 2"))
-        f.write(format_chapter("1/1000", format_time(0, 25, 0), duration, "Chapter 3"))
+def find_index(text, pattern):
+    output = -1
+    try:
+        output = text.index(pattern)
+    except ValueError:
+        pass
+    return output
+
+def remove_existing_chapters(file_metadata):
+    re.sub(CHAPTER_REGEX, "", file_metadata)
+    return file_metadata
+
+def format_chapters(raw_chapters, mp4_filename):
+    duration = get_duration_millis(mp4_filename)
+
+    chapters = []
+    for idx, raw_chapter in enumerate(raw_chapters):
+        if idx < len(raw_chapters) - 1:
+            end_time = raw_chapters[idx + 1][0]
+        else:
+            end_time = duration
+
+        chapter = {
+            'timebase': '1/1000',
+            'start': raw_chapter[0],
+            'end': end_time,
+            'title': raw_chapter[1]
+        }
+        chapters.append(chapter)
+    
+    chapter_string = ""
+    for chapter in chapters:
+        chapter_string += chapter_to_string(chapter)
+        chapter_string += "\n"
+    
+    return chapter_string
+
+def write_new_metadata_to_file(mp4_filename, new_metadata):
+    temp_mp4_filename = "temp-mp4-" + datetime.now().strftime("%H%M%S") + ".mp4"
+    temp_meta_filename = "temp-meta-" + datetime.now().strftime("%H%M%S")
+    with open(temp_meta_filename, "w") as f:
+        f.write(new_metadata)
+
+    subprocess.check_output(["ffmpeg", "-i", mp4_filename, "-i", temp_meta_filename, "-map_chapters", "1", "-codec", "copy", temp_mp4_filename])
+
+    os.remove(mp4_filename)
+    os.remove(temp_meta_filename)
+
+    os.rename(temp_mp4_filename, mp4_filename)
+    
+# replaces any chapters in the mp4 file with the new chapters from the chapter file
+def replace_chapters_from_file(mp4_filename, new_chapter_filename):
+    raw_chapters = load_existing_chapters(mp4_filename)
+    new_raw_chapters = load_new_chapters(new_chapter_filename)
+
+    print("Existing chapters")
+    for chapter in raw_chapters:
+        print(f"{chapter[0]} {chapter[1]}")
+
+    print("")
+    print("New chapters")
+    for chapter in new_raw_chapters:
+        print(f"{chapter[0]} {chapter[1]}")
+
+    metadata_filename = "temp-" + datetime.now().strftime("%H%M%S")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", mp4_filename, "-f", "ffmetadata", metadata_filename])
+
+    with open(metadata_filename) as f:
+        file_metadata = f.read()
+
+    os.remove(metadata_filename)
+
+    index_of_first_chapter = find_index(file_metadata, "[CHAPTER]")
+
+    if index_of_first_chapter > 0:
+        file_metadata = remove_existing_chapters(file_metadata)
+        chapters = format_chapters(new_raw_chapters, mp4_filename)
+
+        file_metadata = file_metadata[:index_of_first_chapter] + chapters + file_metadata [:index_of_first_chapter:]
+
+        print("")
+        print("New metadata")
+        print(file_metadata)        
+        
+        write_new_metadata_to_file(mp4_filename, file_metadata)
 
 if __name__ == "__main__":
-    chapters = load_chapters("OUTPUT.mp4")
-    print(chapters)
+    if len(sys.argv) == 3:
+        mp4_filename = sys.argv[1]
+        chapter_filename = sys.argv[2]
+
+        replace_chapters_from_file(mp4_filename, chapter_filename)
+    else:
+        print("Error: Expected 2 arguments: file.mp4 chapters.txt")
